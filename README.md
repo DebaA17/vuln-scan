@@ -15,6 +15,10 @@ A Node.js CLI that scans a project’s **lockfile** (npm / pnpm / yarn) to find 
 - Optional `--json` output for automation
 - Includes fix version when OSV provides one
 
+## Demo
+
+![vuln-scan demo](Demo/Demo.png)
+
 ## Install / Run
 
 ### Run with npx

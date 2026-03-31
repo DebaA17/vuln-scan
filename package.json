@@ -9,7 +9,8 @@
   },
   "files": [
     "cli.js",
-    "src"
+    "src",
+    "Demo"
   ],
   "scripts": {
     "start": "node ./cli.js",
