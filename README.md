@@ -68,4 +68,8 @@ node ./cli.js
 node ./cli.js --json
 ```
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and PGP details.
+
 
