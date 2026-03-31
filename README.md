@@ -27,6 +27,12 @@ A Node.js CLI that scans a project’s **lockfile** (npm / pnpm / yarn) to find 
 npx vuln-scan
 ```
 
+### Run with pnpm
+
+```bash
+pnpm dlx vuln-scan
+```
+
 ### Install globally
 
 ```bash
