@@ -37,10 +37,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yourname/vuln-scan.git"
+    "url": "git+https://github.com/DebaA17/vuln-scan.git"
   },
   "bugs": {
-    "url": "https://github.com/yourname/vuln-scan/issues"
+    "url": "https://github.com/DebaA17/vuln-scan/issues"
   },
-  "homepage": "https://github.com/yourname/vuln-scan#readme"
+  "homepage": "https://github.com/DebaA17/vuln-scan#readme"
 }
