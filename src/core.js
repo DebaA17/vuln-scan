@@ -320,10 +320,12 @@ async function queryOsv({ name, version }) {
     }
   };
 
-  const res = await fetch(OSV_QUERY_URL, {
+  const res = await fetchWithRetry(OSV_QUERY_URL, {
     method: 'POST',
     headers: {
-      'content-type': 'application/json'
+      'content-type': 'application/json',
+      // A friendly UA can help with debugging/telemetry on the server side.
+      'user-agent': 'vuln-scan (node)'
     },
     body: JSON.stringify(body)
   });
@@ -334,6 +336,63 @@ async function queryOsv({ name, version }) {
   }
 
   return res.json();
+}
+
+async function fetchWithRetry(url, init) {
+  const retries = 3;
+  const timeoutMs = 15_000;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      // eslint-disable-next-line no-undef
+      return await fetch(url, {
+        ...init,
+        signal: controller.signal
+      });
+    } catch (err) {
+      const isLast = attempt === retries;
+      const message = err instanceof Error ? err.message : String(err);
+      const code = extractNodeErrorCode(err);
+
+      if (isLast) {
+        // Provide a more actionable message than the generic "fetch failed".
+        if (code === 'ETIMEDOUT' || code === 'ENETUNREACH' || code === 'EAI_AGAIN') {
+          throw new Error(
+            `Network error reaching OSV.dev (${code}). ` +
+              `If you're on an IPv6-restricted network, try: NODE_OPTIONS=--dns-result-order=ipv4first vuln-scan`
+          );
+        }
+        throw new Error(`Failed to reach OSV.dev: ${message}`);
+      }
+
+      // Retry transient network issues / timeouts.
+      if (code === 'ETIMEDOUT' || code === 'ECONNRESET' || code === 'ENETUNREACH' || code === 'EAI_AGAIN') {
+        await delay(250 * Math.pow(2, attempt));
+        continue;
+      }
+
+      // AbortError or other non-network errors should fail fast.
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  // Unreachable.
+  throw new Error('Failed to reach OSV.dev.');
+}
+
+function extractNodeErrorCode(err) {
+  // Node/undici errors often have nested causes.
+  const code = err?.cause?.code || err?.code;
+  return typeof code === 'string' ? code : null;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeOsvResponse({ dependency, response }) {

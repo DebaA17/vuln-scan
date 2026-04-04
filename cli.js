@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { setDefaultResultOrder } from 'node:dns';
+
 import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
@@ -40,6 +42,14 @@ function severityColor(sev) {
 }
 
 async function main() {
+  // Some environments have broken/blocked IPv6 routes. Node's fetch (undici) may try IPv6 first
+  // and time out even when IPv4 works (e.g., curl succeeds). Prefer IPv4 DNS results first.
+  try {
+    setDefaultResultOrder('ipv4first');
+  } catch {
+    // Older Node versions may not support this; best-effort.
+  }
+
   const args = new Set(process.argv.slice(2));
   if (args.has('--help') || args.has('-h')) {
     printHelp();
