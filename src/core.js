@@ -18,11 +18,24 @@ const OSV_QUERY_URL = 'https://api.osv.dev/v1/query';
 export async function scanProject({ cwd, onProgress }) {
   const projectPackageJsonPath = path.join(cwd, 'package.json');
   const hasPackageJson = await exists(projectPackageJsonPath);
-  if (!hasPackageJson) {
-    throw new Error('Missing package.json in the current directory.');
+
+  let detected;
+  try {
+    detected = await detectPackageManager(cwd);
+  } catch {
+    if (hasPackageJson) {
+      throw new Error(
+        'No supported lockfile found (package-lock.json, pnpm-lock.yaml, yarn.lock). ' +
+          'Run your package manager install command to generate a lockfile, then re-run vuln-scan.'
+      );
+    }
+    throw new Error(
+      'Nothing to scan: no package.json or supported lockfile found (package-lock.json, pnpm-lock.yaml, yarn.lock). '
+        + 'Run vuln-scan from a project directory.'
+    );
   }
 
-  const { packageManager, lockfilePath } = await detectPackageManager(cwd);
+  const { packageManager, lockfilePath } = detected;
 
   const dependencies = await readDependenciesFromLockfile({
     packageManager,
