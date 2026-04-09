@@ -1,4 +1,11 @@
-# vuln-scan
+<h1 align="center">vuln-scan</h1>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/vuln-scan"><img alt="npm downloads" src="https://img.shields.io/npm/dt/vuln-scan?style=flat-square"></a>
+  <a href="https://www.npmjs.com/package/vuln-scan"><img alt="npm version" src="https://img.shields.io/npm/v/vuln-scan?style=flat-square"></a>
+  <a href="https://github.com/DebaA17/vuln-scan/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/DebaA17/vuln-scan/npm-publish.yml?style=flat-square"></a>
+  <a href="https://www.npmjs.com/package/vuln-scan"><img alt="license" src="https://img.shields.io/npm/l/vuln-scan?style=flat-square"></a>
+</p>
 
 A Node.js CLI that scans a project’s **lockfile** (npm / pnpm / yarn) to find known vulnerabilities using the **OSV.dev** API.
 
