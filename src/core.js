@@ -5,6 +5,7 @@ import yaml from 'js-yaml';
 import yarnLockfile from '@yarnpkg/lockfile';
 
 const OSV_QUERY_URL = 'https://api.osv.dev/v1/query';
+const NVD_CVE_QUERY_URL = 'https://services.nvd.nist.gov/rest/json/cves/2.0';
 
 /**
  * Scan the current project by detecting its lockfile, extracting exact installed versions,
@@ -59,9 +60,25 @@ export async function scanProject({ cwd, onProgress }) {
         id: vuln.id,
         cve: vuln.cve,
         severity: vuln.severity,
+        cvssScore: vuln.cvssScore,
+        cvssVector: vuln.cvssVector,
         summary: vuln.summary,
-        fixed: vuln.fixed
+        fixed: vuln.fixed,
+        references: vuln.references,
+        reference: vuln.reference
       });
+    }
+  }
+
+  // Enrich with CVSS score + stable reference URLs when CVE IDs exist.
+  await enrichWithNvd({ findings: flattened });
+
+  // Normalize severity again after enrichment (CVSS/NVD can override).
+  for (const f of flattened) {
+    if (Number.isFinite(f.cvssScore)) {
+      f.severity = severityFromCvssScore(f.cvssScore);
+    } else if (!f.severity || f.severity === 'UNKNOWN') {
+      f.severity = 'UNKNOWN';
     }
   }
 
@@ -69,6 +86,8 @@ export async function scanProject({ cwd, onProgress }) {
   flattened.sort((a, b) => {
     const s = severityRank(b.severity) - severityRank(a.severity);
     if (s !== 0) return s;
+    const c = (Number.isFinite(b.cvssScore) ? b.cvssScore : -1) - (Number.isFinite(a.cvssScore) ? a.cvssScore : -1);
+    if (c !== 0) return c;
     const p = a.package.localeCompare(b.package);
     if (p !== 0) return p;
     return a.version.localeCompare(b.version);
@@ -416,14 +435,21 @@ function normalizeOsvResponse({ dependency, response }) {
     const cve = findCveAlias(v);
     const summary = String(v.summary || v.details || '');
     const severity = computeSeverity(v);
+    const { cvssScore, cvssVector } = extractCvss(v);
     const fixed = extractFixedVersion({ vuln: v, packageName: dependency.name });
+    const references = extractReferenceUrls(v);
+    const reference = pickPrimaryReference({ cve, id, references });
 
     return {
       id,
       cve,
       summary: summary.trim().replace(/\s+/g, ' '),
       severity,
-      fixed
+      cvssScore,
+      cvssVector,
+      fixed,
+      references,
+      reference
     };
   });
 }
@@ -450,16 +476,175 @@ function computeSeverity(vuln) {
   // Some records have a database-specific severity label.
   const dbSev = vuln?.database_specific?.severity;
   if (typeof dbSev === 'string') {
-    const normalized = dbSev.toUpperCase();
-    if (['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(normalized)) return normalized;
+    const normalized = normalizeSeverityLabel(dbSev);
+    if (normalized) return normalized;
   }
 
   if (maxScore === null) return 'UNKNOWN';
-  if (maxScore >= 9) return 'CRITICAL';
-  if (maxScore >= 7) return 'HIGH';
-  if (maxScore >= 4) return 'MEDIUM';
-  if (maxScore > 0) return 'LOW';
+  return severityFromCvssScore(maxScore);
+}
+
+function normalizeSeverityLabel(label) {
+  const normalized = String(label).trim().toUpperCase();
+  // GitHub-style labels: LOW, MODERATE, HIGH, CRITICAL
+  if (normalized === 'MODERATE') return 'MEDIUM';
+  if (normalized === 'IMPORTANT') return 'HIGH';
+  if (['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(normalized)) return normalized;
+  return null;
+}
+
+function severityFromCvssScore(score) {
+  if (!Number.isFinite(score)) return 'UNKNOWN';
+  if (score >= 9) return 'CRITICAL';
+  if (score >= 7) return 'HIGH';
+  if (score >= 4) return 'MEDIUM';
+  if (score > 0) return 'LOW';
   return 'UNKNOWN';
+}
+
+function extractCvss(vuln) {
+  const sev = Array.isArray(vuln?.severity) ? vuln.severity : [];
+
+  let vector = null;
+  let numeric = null;
+
+  for (const s of sev) {
+    const score = s?.score;
+    if (typeof score !== 'string') continue;
+    const trimmed = score.trim();
+    if (!trimmed) continue;
+
+    // OSV commonly provides the CVSS vector string.
+    if (trimmed.startsWith('CVSS:')) {
+      vector = vector || trimmed;
+      continue;
+    }
+
+    const maybe = Number.parseFloat(trimmed);
+    if (Number.isFinite(maybe)) numeric = Math.max(numeric ?? 0, maybe);
+  }
+
+  return { cvssScore: numeric, cvssVector: vector };
+}
+
+function extractReferenceUrls(vuln) {
+  const refs = Array.isArray(vuln?.references) ? vuln.references : [];
+  const urls = refs
+    .map((r) => (typeof r?.url === 'string' ? r.url.trim() : null))
+    .filter((u) => u);
+  return uniqBy(urls, (u) => u);
+}
+
+function pickPrimaryReference({ cve, id, references }) {
+  if (cve && typeof cve === 'string') {
+    return `https://nvd.nist.gov/vuln/detail/${cve}`;
+  }
+  if (Array.isArray(references) && references.length) return references[0];
+  if (id && typeof id === 'string' && id.startsWith('GHSA-')) {
+    return `https://github.com/advisories/${id}`;
+  }
+  return null;
+}
+
+async function enrichWithNvd({ findings }) {
+  const byCve = new Map();
+  const cves = uniqBy(
+    findings
+      .map((f) => (typeof f.cve === 'string' ? f.cve.trim() : null))
+      .filter((c) => c && c.startsWith('CVE-')),
+    (c) => c
+  );
+
+  // Avoid hammering NVD; keep concurrency low.
+  await promisePool({
+    items: cves,
+    concurrency: 4,
+    worker: async (cve) => {
+      const data = await queryNvd({ cveId: cve });
+      byCve.set(cve, data);
+    }
+  });
+
+  for (const f of findings) {
+    const cve = typeof f.cve === 'string' ? f.cve.trim() : null;
+    if (!cve || !byCve.has(cve)) continue;
+    const nvd = byCve.get(cve);
+    if (!nvd) continue;
+
+    if (!Number.isFinite(f.cvssScore) && Number.isFinite(nvd.cvssScore)) {
+      f.cvssScore = nvd.cvssScore;
+    }
+
+    if ((f.severity === 'UNKNOWN' || !f.severity) && nvd.severity) {
+      f.severity = nvd.severity;
+    }
+
+    const mergedRefs = [];
+    if (Array.isArray(f.references)) mergedRefs.push(...f.references);
+    if (Array.isArray(nvd.references)) mergedRefs.push(...nvd.references);
+    if (cve) mergedRefs.push(`https://nvd.nist.gov/vuln/detail/${cve}`);
+    f.references = uniqBy(mergedRefs.filter(Boolean), (u) => u);
+    if (!f.reference && f.references.length) f.reference = f.references[0];
+  }
+}
+
+async function queryNvd({ cveId }) {
+  const url = `${NVD_CVE_QUERY_URL}?cveId=${encodeURIComponent(cveId)}`;
+
+  const res = await fetchWithRetry(url, {
+    method: 'GET',
+    headers: {
+      'accept': 'application/json',
+      'user-agent': 'vuln-scan (node)'
+    }
+  });
+
+  if (!res.ok) {
+    // NVD can rate-limit; treat failures as non-fatal enrichment.
+    return null;
+  }
+
+  const json = await res.json();
+  const first = Array.isArray(json?.vulnerabilities) ? json.vulnerabilities[0] : null;
+  const cve = first?.cve;
+  const { cvssScore, severity } = extractNvdCvss(cve);
+  const references = Array.isArray(cve?.references)
+    ? cve.references
+        .map((r) => (typeof r?.url === 'string' ? r.url.trim() : null))
+        .filter((u) => u)
+    : [];
+
+  return {
+    cvssScore,
+    severity,
+    references: uniqBy(references, (u) => u)
+  };
+}
+
+function extractNvdCvss(cve) {
+  const metrics = cve?.metrics;
+  if (!metrics || typeof metrics !== 'object') return { cvssScore: null, severity: null };
+
+  const candidates = [
+    metrics.cvssMetricV31,
+    metrics.cvssMetricV30,
+    metrics.cvssMetricV2
+  ];
+
+  for (const list of candidates) {
+    if (!Array.isArray(list) || !list.length) continue;
+    const m = list[0];
+    const baseScore = m?.cvssData?.baseScore;
+    const baseSeverity = m?.cvssData?.baseSeverity || m?.baseSeverity;
+
+    const score = typeof baseScore === 'number' ? baseScore : null;
+    const sev = typeof baseSeverity === 'string' ? baseSeverity.trim().toUpperCase() : null;
+    const normalized = sev ? normalizeSeverityLabel(sev) || sev : null;
+
+    return { cvssScore: score, severity: normalized };
+  }
+
+  return { cvssScore: null, severity: null };
 }
 
 function severityRank(sev) {

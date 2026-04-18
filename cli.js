@@ -57,6 +57,37 @@ function severityColor(sev) {
   }
 }
 
+function formatCvssScore(score) {
+  return Number.isFinite(score) ? score.toFixed(1) : '-';
+}
+
+function computeColWidths() {
+  // cli-table3 truncates with ellipsis when the rendered table exceeds terminal width.
+  // Keep the total content width conservative so links are less likely to be cut.
+  const termWidth = Number.isFinite(process.stdout.columns) ? process.stdout.columns : 120;
+  const cols = 6;
+
+  // Approximate overhead from borders/padding/separators.
+  const overhead = cols * 3 + 1;
+  const contentBudget = Math.max(70, termWidth - overhead);
+
+  const pkg = 22;
+  const cve = 18;
+  const sev = 10;
+  const cvss = 6;
+  const fixed = pkg + cve + sev + cvss;
+  const remaining = Math.max(20, contentBudget - fixed);
+
+  const ref = Math.max(26, Math.min(60, Math.floor(remaining * 0.55)));
+  const summary = Math.max(20, remaining - ref);
+
+  return [pkg, cve, sev, cvss, ref, summary];
+}
+
+function normalizeReference(v) {
+  return v.reference || (Array.isArray(v.references) && v.references.length ? v.references[0] : null);
+}
+
 // Compare two semantic versions (returns true if v1 < v2)
 function isVulnerable(installedVersion, fixedVersion) {
   const installedParts = installedVersion.split('.').map(Number);
@@ -119,19 +150,40 @@ async function main() {
     }
 
     const table = new Table({
-      head: ['Package', 'CVE ID', 'Severity', 'Summary'],
+      head: ['Package', 'CVE ID', 'Severity', 'CVSS', 'Reference', 'Summary'],
       wordWrap: true,
-      colWidths: [28, 18, 10, 70]
+      colWidths: computeColWidths()
     });
 
     for (const v of activeVulns) {
       const pkg = `${v.package}@${v.version}`;
       const cve = v.cve || v.id;
       const summary = v.summary + (v.fixed ? ` (Fix: ${v.fixed})` : '');
-      table.push([pkg, cve, severityColor(v.severity), summary]);
+      const ref = normalizeReference(v) || '-';
+      table.push([pkg, cve, severityColor(v.severity), formatCvssScore(v.cvssScore), ref, summary]);
     }
 
     console.log(table.toString());
+
+    // Always print full URLs below the table so they never get cut by terminal width.
+    const fullRefs = [];
+    const seen = new Set();
+    for (const v of activeVulns) {
+      const cve = v.cve || v.id;
+      const ref = normalizeReference(v);
+      if (!ref) continue;
+      const key = `${cve}|${ref}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      fullRefs.push({ cve, ref });
+    }
+    if (fullRefs.length) {
+      console.log(chalk.bold('References:'));
+      for (const { cve, ref } of fullRefs) {
+        console.log(`- ${cve}: ${ref}`);
+      }
+    }
+
     console.log(brandingLine());
     console.log(chalk.green('Scan complete!'));
   } catch (err) {
